@@ -7,9 +7,12 @@ from random import randint
 import googleapiclient.discovery
 from urllib.parse import parse_qs, urlparse
 from datetime import datetime
+import json
 
 ### make sure intents are included so that the bot can fetch the member list
 client = discord.Client(intents=intents)
+
+###todo: move to configs file
 
 ### access tokens for discord and youtube api
 DISCORD_API_TOKEN = ""
@@ -25,8 +28,12 @@ FRIDAY_VIDEO_1_URL = ""
 # link to another friday video
 FRIDAY_VIDEO_2_URL = ""
 
+### keep track of birthdays
+CHANNEL_BIRTHDAY_ID = 0
+
 ### the video the bot will link when someone uses a specific phrase
 LINK_1_URL = ""
+LINK_2_URL = ""
 
 ### what messages/emojis are responsible for assigning roles
 # the ID of the message for the bot to check
@@ -40,12 +47,24 @@ ROLE_2_NAME = ""
 # custom server emoji for the second role it can assign
 ROLE_2_EMOJI_ID = 0
 
+BIRTHDAYS = []
+
 @client.event
 async def on_ready():
     print('Logging in as {0.user}'.format(client))
 
+    init_birthdays()
+
     # start the cog so we can have a video on the correct days
     myCog = MyCog()
+
+# save my friend's birthdays in month/day/name/user_id form
+# currently don't use the name, but it helps me keep track of who is who
+def init_birthdays():
+    #todo: move this to a file, just needed this out ASAP
+    BIRTHDAYS.clear()
+    BIRTHDAYS.append((1, 1, "Sample", 0))
+
 
 @client.event
 # don't use on_reaction_add(), it won't keep the original message cached
@@ -94,6 +113,9 @@ async def on_message(message):
     if ('!watch this') in message.content.lower():
         await message.channel.send(LINK_1_URL)
 
+    if ('!names') in message.content.lower():
+        await message.channel.send(LINK_2_URL)
+
     if ('clem') in message.content.lower():
         await message.add_reaction('🐈')
 
@@ -131,46 +153,66 @@ class MyCog(commands.Cog):
 
         return video_list
 
+    def getVars(self):
+        varsStream = open('vars.json','r')
+        varsDict = json.loads(varsStream.read())
+        print("Loading in last printed time after a reset:", varsDict["lastPosted"])
+        varsStream.close()
+
+        return varsDict
+
     def __init__(self):
         self.postedToday = False
         self.playlist = self.getPlaylist()
+        self.vars = self.getVars()
         self.printer.start()
 
     def cog_unload(self):
         self.printer.cancel()
 
-    # check once a day, but can be configured to check more and only post once per day
-    @tasks.loop(hours=24.0)
+    # check a few times a day so it posts earlier and not later
+    @tasks.loop(hours=8.0)
     async def printer(self):
+        # the bot get restarted by heroku on most days, so this prevents it from double posting
+
         # Wednesdays
-        if datetime.today().weekday() == 2 and not self.postedToday:
-            # Print the URL for the frog video matching up to this week
-            # The playlist started August 30th, 2017, which was the 34th week of that year
-            # Therefore offset by (52 - 34 = 18) and mod by total weeks in a year to get the appropriate video of the week
-            url = "https://www.youtube.com/watch?v=" + self.playlist[(datetime.today().isocalendar()[1] + 18) % 52]["snippet"]["resourceId"]["videoId"]
-            await client.get_channel(CHANNEL_VIDEO_ID).send(url)
-            self.postedToday = True
+        if (datetime.now() - datetime.strptime(  self.vars["lastPosted"], "%b %d %Y %I:%M%p")).days >= 1:
+            if datetime.today().weekday() == 2:
+                # Print the URL for the frog video matching up to this week
+                # The playlist started August 30th, 2017, which was the 34th week of that year
+                # Therefore offset by (52 - 34 = 18) and mod by total weeks in a year to get the appropriate video of the week
+                url = "https://www.youtube.com/watch?v=" + self.playlist[(datetime.today().isocalendar()[1] + 18) % 52]["snippet"]["resourceId"]["videoId"]
+                await client.get_channel(CHANNEL_VIDEO_ID).send(url)
 
-        # Fridays
-        elif datetime.today().weekday() == 4 and not self.postedToday:
-            # 0 is special, 1-9 are normal
-            isNormal = randint(0, 9)
+            # Fridays
+            elif datetime.today().weekday() == 4:
+                # 0 is special, 1-9 are normal
+                isNormal = randint(0, 9)
 
-            # Post the video in the week leading up to Christmas
-            currentDay = datetime.now().timetuple().tm_yday
-            isChristmasWeek = currentDay <= 359 and currentDay > 352
+                # Post the video in the week leading up to Christmas
+                currentDay = datetime.now().timetuple().tm_yday
+                isChristmasWeek = currentDay <= 359 and currentDay > 352
 
-            # Post the normal one by default
-            url = FRIDAY_VIDEO_1_URL
+                # Post the normal one by default
+                url = FRIDAY_VIDEO_1_URL
 
-            # Post the special video 10% of the time, or on Christmas
-            if not isNormal or isChristmasWeek:
-                url = FRIDAY_VIDEO_2_URL
+                # Post the special video 10% of the time, or on Christmas
+                if not isNormal or isChristmasWeek:
+                    url = FRIDAY_VIDEO_2_URL
 
-            await client.get_channel(CHANNEL_VIDEO_ID).send(url)
-            self.postedToday = True
+                await client.get_channel(CHANNEL_VIDEO_ID).send(url)
 
-        else:
-            self.postedToday = False
+
+            # birthday contains a month, a day, and a person
+            for birthday in BIRTHDAYS:
+                if datetime.today().month == birthday[0] and datetime.today().day == birthday[1]:
+                    await client.get_channel(CHANNEL_BIRTHDAY_ID).send("Happy Birthday, <@" + str(birthday[3]) + "> !")
+
+            # save the date it was last posted in case the bot is restarted
+            self.vars["lastPosted"] = datetime.now().strftime("%b %d %Y %I:%M%p")
+            with open('vars.json', 'w') as varsFile:
+                json.dump(self.vars, varsFile)
+            print("Posted today at", self.vars["lastPosted"])
+
 
 client.run(DISCORD_API_TOKEN)
